@@ -1,11 +1,11 @@
 # Buzz! controller lights for PCSX2 on Windows
 
-These unofficial source patches forward the emulated Buzz! controller's four red-light commands to a physical USB set. ChatGPT generated the implementation. A human tester verified the v2.8.2 build during gameplay with a wired Sony Buzz! set identified as USB `054C:0002`.
+These unofficial source patches forward the emulated Buzz! controller's four red-light commands to a physical USB set. ChatGPT generated the implementation. A human tester verified the lights during gameplay on v2.8.2 and v2.9.181 with a wired Sony Buzz! set identified as USB `054C:0002`.
 
 | PCSX2 release | Patch | Validation |
 | --- | --- | --- |
 | [v2.8.2](https://github.com/PCSX2/pcsx2/releases/tag/v2.8.2), stable | [pcsx2-2.8.2-luces-buzz.patch](pcsx2-2.8.2-luces-buzz.patch) | Windows x64 build and in-game lighting confirmed |
-| [v2.9.181](https://github.com/PCSX2/pcsx2/releases/tag/v2.9.181), nightly | [pcsx2-2.9.181-luces-buzz.patch](pcsx2-2.9.181-luces-buzz.patch) | Windows x64 build and startup verified. In-game lighting is untested. |
+| [v2.9.181](https://github.com/PCSX2/pcsx2/releases/tag/v2.9.181), nightly | [pcsx2-2.9.181-luces-buzz.patch](pcsx2-2.9.181-luces-buzz.patch) | Windows x64 build and in-game lighting confirmed |
 
 Both tags contain the same upstream Buzz! source files, so the version-labeled patches contain the same diff.
 
