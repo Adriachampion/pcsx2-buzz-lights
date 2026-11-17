@@ -1,0 +1,204 @@
+diff --git a/pcsx2/USB/usb-pad/usb-buzz.cpp b/pcsx2/USB/usb-pad/usb-buzz.cpp
+index 8e7f75f..33ee183 100644
+--- a/pcsx2/USB/usb-pad/usb-buzz.cpp
++++ b/pcsx2/USB/usb-pad/usb-buzz.cpp
+@@ -13,6 +13,10 @@
+ #include "USB/usb-pad/usb-pad.h"
+ #include <common/Console.h>
+ 
++#ifdef _WIN32
++#include <SDL3/SDL_hidapi.h>
++#endif
++
+ namespace usb_pad
+ {
+ 	static const USBDescStrings desc_strings = {
+@@ -120,7 +124,82 @@ namespace usb_pad
+ 	{
+ 	}
+ 
+-	BuzzState::~BuzzState() = default;
++	BuzzState::~BuzzState()
++	{
++#ifdef _WIN32
++		CloseLights();
++#endif
++	}
++
++#ifdef _WIN32
++	static bool buzz_write_lights(SDL_hid_device* device, const std::array<u8, 4>& lights)
++	{
++		// Windows HID expects a leading report ID (zero for this unnumbered report).
++		const std::array<u8, 8> report = {0, 0, lights[0], lights[1], lights[2], lights[3], 0, 0};
++		return SDL_hid_write(device, report.data(), report.size()) == static_cast<int>(report.size());
++	}
++
++	void BuzzState::SetLights(const std::array<u8, 4>& lights)
++	{
++		if (!physical_lights)
++			return;
++
++		const u32 generation = SDL_hid_device_change_count();
++		if (generation != light_device_generation)
++		{
++			CloseLights();
++			light_device_generation = generation;
++		}
++
++		if (light_device && last_lights == lights)
++			return;
++
++		if (!light_device)
++		{
++			const auto now = std::chrono::steady_clock::now();
++			if (now < next_light_open)
++				return;
++
++			next_light_open = now + std::chrono::seconds(1);
++
++			// The button mappings do not identify a physical set for output.
++			// With multiple matching sets connected, leave their lights alone.
++			SDL_hid_device_info* devices = SDL_hid_enumerate(0x054c, 0x0002);
++			if (devices && !devices->next)
++				light_device = SDL_hid_open_path(devices->path);
++			SDL_hid_free_enumeration(devices);
++			if (!light_device)
++				return;
++		}
++
++		if (buzz_write_lights(light_device, lights))
++		{
++			last_lights = lights;
++		}
++		else
++		{
++			SDL_hid_close(light_device);
++			light_device = nullptr;
++			next_light_open = std::chrono::steady_clock::now() + std::chrono::seconds(1);
++		}
++	}
++
++	void BuzzState::CloseLights()
++	{
++		if (light_device)
++		{
++			buzz_write_lights(light_device, {});
++			SDL_hid_close(light_device);
++			light_device = nullptr;
++		}
++		next_light_open = {};
++	}
++
++	static void buzz_handle_reset(USBDevice* dev)
++	{
++		USB_CONTAINER_OF(dev, BuzzState, dev)->CloseLights();
++	}
++#endif
+ 
+ 	static void buzz_handle_control(USBDevice* dev, USBPacket* p,
+ 		int request, int value, int index, int length, uint8_t* data)
+@@ -139,6 +218,17 @@ namespace usb_pad
+ 						break;
+ 				}
+ 				break;
++			case SET_REPORT:
++				// Output report, ID 0, interface 0. Byte zero is reserved.
++				if (value != 0x0200 || index != 0 || length < 5)
++				{
++					p->status = USB_RET_STALL;
++					break;
++				}
++#ifdef _WIN32
++				USB_CONTAINER_OF(dev, BuzzState, dev)->SetLights({data[1], data[2], data[3], data[4]});
++#endif
++				break;
+ 			case SET_IDLE:
+ 				break;
+ 			default:
+@@ -230,7 +320,10 @@ namespace usb_pad
+ 
+ 		s->dev.speed = USB_SPEED_FULL;
+ 		s->dev.klass.handle_attach = usb_desc_attach;
+-		s->dev.klass.handle_reset = nullptr;
++#ifdef _WIN32
++		s->dev.klass.handle_reset = buzz_handle_reset;
++		UpdateSettings(&s->dev, si);
++#endif
+ 		s->dev.klass.handle_control = buzz_handle_control;
+ 		s->dev.klass.handle_data = buzz_handle_data;
+ 		s->dev.klass.unrealize = buzz_unrealize;
+@@ -338,8 +431,27 @@ namespace usb_pad
+ 		return bindings;
+ 	}
+ 
++#ifdef _WIN32
++	void BuzzDevice::UpdateSettings(USBDevice* dev, SettingsInterface& si) const
++	{
++		BuzzState* s = USB_CONTAINER_OF(dev, BuzzState, dev);
++		const bool enabled = USB::GetConfigBool(si, s->port, TypeName(), "PhysicalLights", false);
++		if (s->physical_lights && !enabled)
++			s->CloseLights();
++		s->physical_lights = enabled;
++	}
++#endif
++
+ 	std::span<const SettingInfo> BuzzDevice::Settings(u32 subtype) const
+ 	{
++#ifdef _WIN32
++		static constexpr const SettingInfo settings[] = {
++			{SettingInfo::Type::Boolean, "PhysicalLights", TRANSLATE_NOOP("USB", "Physical Buzz Lights"),
++				TRANSLATE_NOOP("USB", "Sends the game's light commands to one Sony Buzz set (USB 054C:0002)."), "false"},
++		};
++		return settings;
++#else
+ 		return {};
++#endif
+ 	}
+ } // namespace usb_pad
+diff --git a/pcsx2/USB/usb-pad/usb-buzz.h b/pcsx2/USB/usb-pad/usb-buzz.h
+index f20d7bb..3a9f85a 100644
+--- a/pcsx2/USB/usb-pad/usb-buzz.h
++++ b/pcsx2/USB/usb-pad/usb-buzz.h
+@@ -4,8 +4,12 @@
+ #pragma once
+ #include "SaveState.h"
+ #include "USB/qemu-usb/desc.h"
+-#include <list>
+-#include <string>
++#ifdef _WIN32
++#include <array>
++#include <chrono>
++
++struct SDL_hid_device;
++#endif
+ 
+ namespace usb_pad
+ {
+@@ -45,6 +49,17 @@ namespace usb_pad
+ 
+ 		u32 port = 0;
+ 
++#ifdef _WIN32
++		void SetLights(const std::array<u8, 4>& lights);
++		void CloseLights();
++
++		bool physical_lights = false;
++		SDL_hid_device* light_device = nullptr;
++		std::array<u8, 4> last_lights{};
++		u32 light_device_generation = 0;
++		std::chrono::steady_clock::time_point next_light_open{};
++#endif
++
+ 		#pragma pack(push, 1)
+ 		struct
+ 		{
+@@ -86,6 +101,9 @@ namespace usb_pad
+ 		const char* TypeName() const override;
+ 		const char* IconName() const override;
+ 		bool Freeze(USBDevice* dev, StateWrapper& sw) const override;
++#ifdef _WIN32
++		void UpdateSettings(USBDevice* dev, SettingsInterface& si) const override;
++#endif
+ 		float GetBindingValue(const USBDevice* dev, u32 bind_index) const override;
+ 		void SetBindingValue(USBDevice* dev, u32 bind_index, float value) const override;
+ 		std::span<const InputBindingInfo> Bindings(u32 subtype) const override;
